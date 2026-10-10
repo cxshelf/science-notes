@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NES Web Emulator</title>
+<style>
+  html,body{margin:0;background:#07090d}
+  .nes-app{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#e5e7eb;max-width:760px;margin:0 auto;padding:20px 14px}
+  .nes-app *{box-sizing:border-box}
+  .nes-console{background:#0f1117;border:1px solid #1f2937;border-radius:16px;padding:14px}
+  .nes-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+  .nes-title{font-size:13px;font-weight:500;letter-spacing:.02em;color:#9ca3af}
+  .nes-title b{color:#e5e7eb;font-weight:500}
+  .nes-screenwrap{position:relative;background:#000;border-radius:10px;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:240px;border:1px solid #1f2937}
+  .nes-screenwrap.drag{border-color:#3b82f6}
+  #screen{image-rendering:pixelated;display:block;background:#000;max-width:100%;height:auto}
+  .nes-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;text-align:center;color:#6b7280;font-size:13px;padding:20px;pointer-events:none}
+  .nes-overlay b{color:#e5e7eb;font-weight:500;font-size:14px}
+  .nes-controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;align-items:center}
+  .btn{background:#1f2937;color:#e5e7eb;border:1px solid #374151;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit}
+  .btn:hover{background:#374151}
+  .btn.primary{background:#2563eb;border-color:#2563eb}
+  .btn.primary:hover{background:#1d4ed8}
+  .btn.small{padding:6px 9px}
+  .nes-row{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  .nes-input{flex:1;min-width:180px;background:#111827;border:1px solid #374151;border-radius:8px;padding:7px 10px;color:#e5e7eb;font-size:12px;font-family:inherit}
+  .nes-select{background:#111827;border:1px solid #374151;border-radius:8px;padding:7px 10px;color:#e5e7eb;font-size:12px;font-family:inherit}
+  .nes-legend{margin-top:12px;font-size:11px;line-height:1.8;color:#6b7280;border-top:1px solid #1f2937;padding-top:10px}
+  .nes-legend kbd{background:#1f2937;border:1px solid #374151;border-radius:4px;padding:1px 5px;font-family:ui-monospace,monospace;font-size:10px;color:#e5e7eb}
+  .nes-status{font-size:11px;color:#6b7280;margin-top:8px;min-height:14px}
+  .nes-scale{display:flex;gap:4px}
+  input[type=range]{width:90px;accent-color:#3b82f6}
+</style>
+</head>
+<body>
+<div class="nes-app">
+  <div class="nes-console" id="console">
+    <div class="nes-bar">
+      <div class="nes-title"><b>NES</b> web emulator</div>
+      <div class="nes-scale">
+        <button class="btn small" data-scale="1">1x</button>
+        <button class="btn small" data-scale="2">2x</button>
+        <button class="btn small" data-scale="3">3x</button>
+        <button class="btn small" data-scale="fit">Fit</button>
+      </div>
+    </div>
+    <div class="nes-screenwrap" id="screenWrap">
+      <canvas id="screen" width="256" height="240"></canvas>
+      <div class="nes-overlay" id="overlay"><b>Drop a .nes file here</b><span>or use the buttons below</span></div>
+    </div>
+    <div class="nes-controls">
+      <button class="btn primary" id="loadBtn">Load ROM</button>
+      <button class="btn" id="playBtn">Play</button>
+      <button class="btn" id="resetBtn">Reset</button>
+      <button class="btn" id="saveBtn">Save state</button>
+      <button class="btn" id="loadStateBtn">Load state</button>
+      <button class="btn" id="muteBtn">Mute</button>
+      <button class="btn" id="fsBtn">Fullscreen</button>
+      <input type="range" id="volume" min="0" max="1" step="0.01" value="0.6" title="Volume">
+      <input type="file" id="romFile" accept=".nes" hidden>
+    </div>
+    <div class="nes-row">
+      <input class="nes-input" id="romUrl" placeholder="Paste a URL to a .nes file...">
+      <button class="btn" id="urlBtn">Load URL</button>
+    </div>
+    <div class="nes-row" id="selectRow" hidden>
+      <select class="nes-select" id="romSelect"><option value="">Choose a bundled ROM...</option></select>
+    </div>
+    <div class="nes-status" id="status">Ready — load a ROM to begin</div>
+    <div class="nes-legend">
+      <div><b style="color:#9ca3af">Player 1</b> — <kbd>Arrows</kbd> move · <kbd>Z</kbd> A · <kbd>X</kbd> B · <kbd>Enter</kbd> Start · <kbd>Shift</kbd> Select · <kbd>Q</kbd>/<kbd>E</kbd> turbo</div>
+      <div><b style="color:#9ca3af">Player 2</b> — <kbd>W A S D</kbd> move · <kbd>K</kbd> A · <kbd>J</kbd> B · <kbd>L</kbd> Start · <kbd>H</kbd> Select</div>
+      <div>Gamepads work automatically. Click the screen once so it captures keyboard focus.</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/jsnes@1.2.1/dist/jsnes.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* Optional bundled ROM list — edit this on your own site.
+     var ROMS = [ { name: 'My Game', file: 'roms/my-game.nes' } ]; */
+  var ROMS = [];
+
+  var $ = function (id) { return document.getElementById(id); };
+  var canvas = $('screen'), wrap = $('screenWrap'), overlay = $('overlay');
+  var statusEl = $('status');
+
+  if (!window.jsnes) { statusEl.textContent = 'Failed to load the emulator core (offline?)'; }
+
+  var ctx = canvas.getContext('2d', { alpha: false });
+  ctx.imageSmoothingEnabled = false;
+  var imageData = ctx.createImageData(256, 240);
+  var fb32 = new Uint32Array(imageData.data.buffer);
+
+  var nes = null, running = false, rafId = null, romName = '', frameCount = 0, muted = false;
+
+  /* ---------- audio ---------- */
+  var audioCtx = null, gainNode = null;
+  var RING = 8192, ringL = new Float32Array(RING), ringR = new Float32Array(RING);
+  var wIdx = 0, rIdx = 0, avail = 0;
+
+  function initAudio() {
+    if (audioCtx) { if (audioCtx.state === 'suspended') audioCtx.resume(); return; }
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    audioCtx = new AC();
+    gainNode = audioCtx.createGain();
+    gainNode.gain.value = muted ? 0 : parseFloat($('volume').value);
+    var sp = audioCtx.createScriptProcessor(1024, 0, 2);
+    sp.onaudioprocess = function (e) {
+      var oL = e.outputBuffer.getChannelData(0), oR = e.outputBuffer.getChannelData(1);
+      for (var i = 0; i < oL.length; i++) {
+        if (avail > 0) { oL[i] = ringL[rIdx]; oR[i] = ringR[rIdx]; rIdx = (rIdx + 1) % RING; avail--; }
+        else { oL[i] = 0; oR[i] = 0; }
+      }
+    };
+    sp.connect(gainNode); gainNode.connect(audioCtx.destination);
+  }
+  function onAudioSample(l, r) {
+    ringL[wIdx] = l; ringR[wIdx] = r; wIdx = (wIdx + 1) % RING;
+    if (avail < RING) avail++; else rIdx = (rIdx + 1) % RING;
+  }
+
+  /* ---------- video ---------- */
+  function onFrame(fb) {
+    for (var i = 0, j = 0; i < 256 * 240; i++, j += 3) {
+      fb32[i] = 0xff000000 | fb[j] | (fb[j + 1] << 8) | (fb[j + 2] << 16);
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }
+
+  function ensureNES() {
+    if (nes) return;
+    initAudio();
+    nes = new jsnes.NES({ onFrame: onFrame, onAudioSample: onAudioSample, sampleRate: audioCtx ? audioCtx.sampleRate : 44100 });
+  }
+
+  /* ---------- loop ---------- */
+  var turboA = false, turboB = false;
+  function loop() {
+    if (!running) return;
+    frameCount++;
+    if (turboA) { frameCount & 1 ? nes.buttonDown(1, jsnes.Controller.BUTTON_A) : nes.buttonUp(1, jsnes.Controller.BUTTON_A); }
+    if (turboB) { frameCount & 1 ? nes.buttonDown(1, jsnes.Controller.BUTTON_B) : nes.buttonUp(1, jsnes.Controller.BUTTON_B); }
+    pollGamepad();
+    nes.frame();
+    rafId = requestAnimationFrame(loop);
+  }
+  function start() { if (running || !nes) return; running = true; $('playBtn').textContent = 'Pause'; loop(); }
+  function stop() { running = false; $('playBtn').textContent = 'Play'; if (rafId) cancelAnimationFrame(rafId); }
+
+  /* ---------- keyboard ---------- */
+  var KEYMAP = {
+    ArrowUp: [1, 'UP'], ArrowDown: [1, 'DOWN'], ArrowLeft: [1, 'LEFT'], ArrowRight: [1, 'RIGHT'],
+    KeyZ: [1, 'A'], KeyX: [1, 'B'], Enter: [1, 'START'], ShiftRight: [1, 'SELECT'],
+    KeyW: [2, 'UP'], KeyS: [2, 'DOWN'], KeyA: [2, 'LEFT'], KeyD: [2, 'RIGHT'],
+    KeyK: [2, 'A'], KeyJ: [2, 'B'], KeyL: [2, 'START'], KeyH: [2, 'SELECT']
+  };
+  function keyHandler(e, down) {
+    var t = e.target.tagName;
+    if (t === 'INPUT' || t === 'SELECT') return;
+    var code = e.code;
+    if (code === 'KeyQ') { turboA = down; e.preventDefault(); return; }
+    if (code === 'KeyE') { turboB = down; e.preventDefault(); return; }
+    var m = KEYMAP[code]; if (!m || !nes) return;
+    e.preventDefault();
+    var b = jsnes.Controller['BUTTON_' + m[1]];
+    down ? nes.buttonDown(m[0], b) : nes.buttonUp(m[0], b);
+  }
+  window.addEventListener('keydown', function (e) { keyHandler(e, true); });
+  window.addEventListener('keyup', function (e) { keyHandler(e, false); });
+  function releaseAll() {
+    if (!nes) return;
+    ['A', 'B', 'SELECT', 'START', 'UP', 'DOWN', 'LEFT', 'RIGHT'].forEach(function (k) {
+      nes.buttonUp(1, jsnes.Controller['BUTTON_' + k]); nes.buttonUp(2, jsnes.Controller['BUTTON_' + k]);
+    });
+  }
+  window.addEventListener('blur', releaseAll);
+
+  /* ---------- gamepad ---------- */
+  function gbtn(gp, i) { return !!(gp.buttons[i] && gp.buttons[i].pressed); }
+  function pollGamepad() {
+    if (!nes || !navigator.getGamepads) return;
+    var gps = navigator.getGamepads();
+    for (var g = 0; g < gps.length && g < 2; g++) {
+      var gp = gps[g]; if (!gp) continue;
+      var p = g + 1, ax = gp.axes[0] || 0, ay = gp.axes[1] || 0;
+      var st = { A: gbtn(gp, 0), B: gbtn(gp, 1), SELECT: gbtn(gp, 8), START: gbtn(gp, 9),
+                 UP: gbtn(gp, 12) || ay < -0.5, DOWN: gbtn(gp, 13) || ay > 0.5,
+                 LEFT: gbtn(gp, 14) || ax < -0.5, RIGHT: gbtn(gp, 15) || ax > 0.5 };
+      for (var k in st) {
+        var b = jsnes.Controller['BUTTON_' + k];
+        st[k] ? nes.buttonDown(p, b) : nes.buttonUp(p, b);
+      }
+    }
+  }
+
+  /* ---------- loading ---------- */
+  function toBinary(buf) {
+    var bytes = new Uint8Array(buf), s = '', chunk = 0x8000;
+    for (var i = 0; i < bytes.length; i += chunk) s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    return s;
+  }
+  function loadROM(data, name) {
+    try {
+      ensureNES();
+      nes.loadROM(typeof data === 'string' ? data : toBinary(data));
+      romName = (name || 'game').replace(/\.nes$/i, '');
+      overlay.style.display = 'none';
+      statusEl.textContent = 'Loaded: ' + romName;
+      document.title = romName + ' — NES';
+      frameCount = 0;
+      start();
+    } catch (err) {
+      statusEl.textContent = 'Could not load ROM: ' + err.message;
+      console.error(err);
+    }
+  }
+
+  $('loadBtn').onclick = function () { $('romFile').click(); };
+  $('romFile').onchange = function () {
+    var f = this.files[0]; if (!f) return;
+    var r = new FileReader();
+    r.onload = function () { loadROM(r.result, f.name); };
+    r.readAsArrayBuffer(f);
+  };
+
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    wrap.addEventListener(ev, function (e) { e.preventDefault(); wrap.classList.add('drag'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    wrap.addEventListener(ev, function (e) { e.preventDefault(); wrap.classList.remove('drag'); });
+  });
+  wrap.addEventListener('drop', function (e) {
+    var f = e.dataTransfer.files[0]; if (!f) return;
+    var r = new FileReader();
+    r.onload = function () { loadROM(r.result, f.name); };
+    r.readAsArrayBuffer(f);
+  });
+
+  function loadURL(url) {
+    statusEl.textContent = 'Fetching ' + url + ' ...';
+    fetch(url).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+      .then(function (b) { loadROM(b, url.split('/').pop()); })
+      .catch(function (e) { statusEl.textContent = 'Fetch failed: ' + e.message; });
+  }
+  $('urlBtn').onclick = function () { var u = $('romUrl').value.trim(); if (u) loadURL(u); };
+
+  /* bundled ROM list */
+  if (ROMS.length) {
+    $('selectRow').hidden = false;
+    ROMS.forEach(function (r) {
+      var o = document.createElement('option'); o.value = r.file; o.textContent = r.name; $('romSelect').appendChild(o);
+    });
+    $('romSelect').onchange = function () { if (this.value) loadURL(this.value); };
+  }
+
+  /* ?rom=path auto-load */
+  var qs = new URLSearchParams(location.search).get('rom');
+  if (qs) loadURL(qs);
+
+  /* ---------- transport ---------- */
+  $('playBtn').onclick = function () { running ? stop() : start(); };
+  $('resetBtn').onclick = function () { if (nes) { nes.reset(); statusEl.textContent = 'Reset'; } };
+  $('muteBtn').onclick = function () {
+    muted = !muted; if (gainNode) gainNode.gain.value = muted ? 0 : parseFloat($('volume').value);
+    this.textContent = muted ? 'Unmute' : 'Mute';
+  };
+  $('volume').oninput = function () { if (gainNode && !muted) gainNode.gain.value = parseFloat(this.value); };
+  $('fsBtn').onclick = function () {
+    var el = $('console');
+    document.fullscreenElement ? document.exitFullscreen() : el.requestFullscreen && el.requestFullscreen();
+  };
+
+  /* ---------- save states ---------- */
+  function stateKey() { return 'nes:state:' + romName; }
+  $('saveBtn').onclick = function () {
+    if (!nes) return;
+    try { localStorage.setItem(stateKey(), JSON.stringify(nes.toJSON())); statusEl.textContent = 'State saved'; }
+    catch (e) { statusEl.textContent = 'Save failed'; }
+  };
+  $('loadStateBtn').onclick = function () {
+    if (!nes) return;
+    var s = localStorage.getItem(stateKey());
+    if (!s) { statusEl.textContent = 'No saved state for this ROM'; return; }
+    try { nes.fromJSON(JSON.parse(s)); statusEl.textContent = 'State loaded'; } catch (e) { statusEl.textContent = 'Bad state'; }
+  };
+
+  /* ---------- scale ---------- */
+  document.querySelectorAll('[data-scale]').forEach(function (b) {
+    b.onclick = function () {
+      var s = this.getAttribute('data-scale');
+      canvas.style.width = s === 'fit' ? '100%' : (256 * parseInt(s, 10)) + 'px';
+    };
+  });
+  canvas.style.width = '512px';
+
+  canvas.addEventListener('click', function () { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); });
+})();
+</script>
+</body>
+</html>
